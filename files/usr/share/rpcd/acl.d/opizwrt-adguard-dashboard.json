@@ -1,0 +1,11 @@
+{
+	"opizwrt-adguard-dashboard": {
+		"description": "Menampilkan dashboard AdGuard Home di dalam LuCI",
+		"read": {
+			"file": {
+				"/etc/adguardhome/adguardhome.yaml": [ "read" ]
+			},
+			"uci": [ "adguardhome" ]
+		}
+	}
+}

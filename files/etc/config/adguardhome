@@ -1,0 +1,9 @@
+
+config adguardhome 'config'
+	option config_file '/etc/adguardhome/adguardhome.yaml'
+	# Bawaan paket menaruh work_dir di /var/lib, yang merupakan tmpfs:
+	# statistik, log kueri, dan cache filter hilang setiap reboot.
+	option work_dir '/etc/adguardhome/data'
+	option user 'adguardhome'
+	option group 'adguardhome'
+	option verbose '0'

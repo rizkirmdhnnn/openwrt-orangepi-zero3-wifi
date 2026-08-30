@@ -1,0 +1,30 @@
+
+# Radio UWE5622. Jalur perangkatnya harus cocok dengan yang dilaporkan
+# /etc/board.json; bila tidak, OpenWrt membuat ulang berkas ini saat boot
+# pertama dan seluruh setelan di bawah hilang tanpa pesan.
+config wifi-device 'radio0'
+	option type 'mac80211'
+	option path 'platform/unisoc_wifi'
+	option channel '6'
+	option band '2g'
+	option htmode 'HT20'
+	option country '00'
+	# Sengaja TIDAK disabled. Perangkat tanpa layar dan tanpa port ethernet
+	# bebas hanya bisa dijangkau lewat Wi-Fi, jadi radio yang mati sejak
+	# awal berarti tidak ada jalan masuk sama sekali setelah flash.
+	option disabled '0'
+
+config wifi-iface 'default_radio0'
+	option device 'radio0'
+	option network 'lan'
+	option mode 'ap'
+	option ssid 'Opizwrt'
+	option encryption 'psk2'
+	# Kata sandi bawaan, dan itu berarti PUBLIK: siapa pun yang membaca repo
+	# ini mengetahuinya. Ganti pada boot pertama.
+	#
+	# Dipilih ada isinya alih-alih dikosongkan karena WPA2 menolak kunci
+	# kurang dari delapan karakter -- kunci kosong membuat radio menyala
+	# tetapi menolak setiap sambungan, yang terbaca sebagai kerusakan alih
+	# alih sebagai keputusan.
+	option key 'opizwrt123'

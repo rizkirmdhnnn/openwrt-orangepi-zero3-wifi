@@ -1,0 +1,15 @@
+
+config ttyd
+	option command '/bin/ash --login'
+	# credential WAJIB ada di image publik.
+	#
+	# ttyd tidak punya autentikasi sendiri: tanpa baris ini, siapa pun yang
+	# menjangkau port 7681 mendapat shell root lewat peramban, tanpa diminta
+	# apa pun. Di image pribadi hal itu dibatasi ke satu VLAN manajemen;
+	# image ini dipakai orang lain di jaringan yang tidak kita ketahui, jadi
+	# batas itu tidak ada.
+	#
+	# Kredensialnya bawaan dan karena itu PUBLIK -- diketahui siapa pun yang
+	# membaca repo ini. Ganti bersama kata sandi root pada boot pertama.
+	option credential 'root:opizwrt'
+	option interface 'br-lan'

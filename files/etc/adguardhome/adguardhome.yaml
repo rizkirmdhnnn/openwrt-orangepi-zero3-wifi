@@ -1,0 +1,137 @@
+# AdGuard Home untuk gateway Orange Pi Zero 3.
+#
+# Perannya di rantai DNS:
+#   klien → dnsmasq :53 → AdGuard :5353 → DoH/HTTP3 ke hulu
+#
+# dnsmasq tetap dipertahankan di depan karena ia yang memegang DHCP dan nama
+# host lokal (.lan). AdGuard hanya menangani penyaringan dan jalan keluar
+# terenkripsi, jadi kalau AdGuard bermasalah, DHCP dan resolusi nama lokal
+# tidak ikut jatuh — penting untuk perangkat yang menjadi gateway.
+#
+# Upstream memakai DoH/HTTP3 terenkripsi, bukan port 53 biasa. Itu bukan
+# pilihan gaya: ISP di jalur ini terbukti membajak port 53, sehingga query
+# polos tidak pernah sampai ke resolver yang dituju. Susunan upstream meniru
+# konfigurasi AdGuard yang sudah terbukti jalan di perangkat sebelumnya.
+
+http:
+  # Mendengarkan di semua alamat supaya antarmuka webnya satu situs
+  # dengan LuCI, apa pun alamat yang dipakai membukanya. Cookie sesi
+  # AdGuard memakai SameSite=Strict, sehingga iframe dashboard di dalam
+  # LuCI hanya menerima sesi bila keduanya berbagi host.
+  #
+  # Aman hanya karena ada akun admin di bawah. Membuka panel TANPA
+  # autentikasi ke semua alamat adalah hal lain sama sekali.
+  #
+  # Yang dibuka hanya antarmuka web; port DNS (dns.bind_hosts) tetap
+  # terkunci di loopback.
+  address: 0.0.0.0:3000
+  session_ttl: 720h
+
+# Kredensial bawaan: admin / password
+#
+# GANTI SEGERA SETELAH BOOT PERTAMA. Berkas ini ada di repo publik, jadi
+# kata sandinya diketahui siapa pun yang membacanya -- hash bcrypt di bawah
+# tidak menyembunyikan apa pun, karena kata sandi aslinya tertulis di baris
+# ini. Anggap ini kunci yang menempel di pintu, bukan kunci yang disimpan.
+#
+# Sebelumnya daftar ini dibiarkan kosong dengan alasan menghindari hash di
+# repo publik. Hasilnya lebih buruk: web UI berjalan TANPA autentikasi sama
+# sekali sampai seseorang ingat membuat akun -- dan pada perangkat nyata itu
+# terlupakan berbulan-bulan. Kata sandi lemah yang diketahui masih menuntut
+# satu langkah untuk ditembus; pintu terbuka tidak menuntut apa pun.
+#
+# Wizard pemasangan AdGuard tertutup begitu berkas ini terisi, sehingga akun
+# tidak bisa lagi dibuat lewat antarmuka. Menggantinya: Settings -> General,
+# atau tulis ulang hash di sini dengan
+#   htpasswd -nBC 10 admin
+users:
+  - name: admin
+    password: $2y$10$pkyXbItxafd8/5P6hH/pX.pVuGzgFejA8gjoNjZ5s/SK5OajFQ0K.
+
+auth_attempts: 5
+block_auth_min: 15
+theme: auto
+
+dns:
+  # Hanya loopback: yang berbicara dengan AdGuard cuma dnsmasq.
+  bind_hosts:
+    - 127.0.0.1
+  port: 5353
+  anonymize_client_ip: false
+
+  upstream_dns:
+    - https://dns10.quad9.net/dns-query
+    - h3://cloudflare-dns.com/dns-query
+    - h3://dns.google/dns-query
+    - '[/lan/]127.0.0.1'
+    - '[//]127.0.0.1'
+  bootstrap_dns:
+    - 9.9.9.10
+    - 149.112.112.10
+    - 1.1.1.1
+  upstream_mode: parallel
+  fallback_dns:
+    - tls://1.1.1.1
+
+  # Jangan bocorkan nama internal ke hulu, dan biarkan dnsmasq yang menjawab
+  # PTR untuk rentang privat.
+  use_private_ptr_resolvers: true
+  local_ptr_upstreams:
+    - 127.0.0.1:53
+  private_networks:
+    - 192.168.8.0/24
+
+  cache_size: 4194304
+  cache_ttl_min: 60
+  cache_optimistic: true
+
+  # dnsmasq sudah menjadi satu-satunya klien, jadi rate limit per-IP justru
+  # berbahaya di sini: seluruh jaringan terlihat sebagai satu sumber.
+  ratelimit: 0
+
+  enable_dnssec: true
+  aaaa_disabled: true
+  refuse_any: true
+
+filtering:
+  protection_enabled: true
+  filtering_enabled: true
+  blocking_mode: default
+  parental_enabled: false
+  safe_search:
+    enabled: false
+  rewrites: []
+
+filters:
+  - enabled: true
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
+    name: AdGuard DNS filter
+    id: 1
+  - enabled: true
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_2.txt
+    name: AdAway Default Blocklist
+    id: 2
+
+whitelist_filters: []
+user_rules: []
+
+querylog:
+  enabled: true
+  interval: 168h
+  size_memory: 1000
+  ignored: []
+
+statistics:
+  enabled: true
+  interval: 720h
+  ignored: []
+
+log:
+  verbose: false
+
+os:
+  group: ""
+  user: ""
+  rlimit_nofile: 0
+
+schema_version: 32

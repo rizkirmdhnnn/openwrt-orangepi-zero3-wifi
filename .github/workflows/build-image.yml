@@ -1,0 +1,339 @@
+name: Build image (buildroot)
+
+# Membangun image OpenWrt lengkap untuk Orange Pi Zero 3 dari source, dengan
+# driver UWE5622 dan patch device tree yang mengaktifkan mmc1 sudah di dalam.
+# Hasilnya satu file .img.gz yang tinggal ditulis ke microSD.
+#
+# Jauh lebih lama daripada jalur SDK (toolchain dibangun dari nol), tapi
+# menghasilkan image utuh, bukan sekadar paket lepasan.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  THEME_TAG: v1.2.2
+  OPENWRT_TAG: v25.12.5
+  PROFILE: xunlong_orangepi-zero3
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: overlay
+
+      - name: Kosongkan disk runner
+        # Buildroot butuh ~30 GB, dan perakitan image di akhir menambah
+        # beberapa GB lagi sekaligus (dua image dengan partisi rootfs 2 GB).
+        # Run sebelumnya mati SIGTERM (exit 143) tanpa error kompilasi —
+        # pola kehabisan disk — jadi pembersihan di sini agresif.
+        run: |
+          echo "sebelum:"; df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /usr/local/.ghcup \
+                      /usr/share/swift /usr/local/share/chromium \
+                      /usr/local/lib/node_modules "$AGENT_TOOLSDIRECTORY"
+          sudo apt-get purge -y '^dotnet-.*' '^llvm-.*' '^mongodb-.*' azure-cli \
+                                google-chrome-stable firefox powershell \
+                                microsoft-edge-stable '^temurin-.*' || true
+          sudo apt-get autoremove -y && sudo apt-get clean
+          sudo docker image prune -af 2>/dev/null || true
+          sudo swapoff -a && sudo rm -f /mnt/swapfile /swapfile || true
+          echo "sesudah:"; df -h / | tail -1
+
+      - name: Pasang dependensi build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev \
+            python3-setuptools rsync swig unzip zlib1g-dev file wget zstd \
+            ccache ecj fastjar java-propose-classpath libelf-dev \
+            python3-distutils-extra qemu-utils subversion
+
+      - name: Ambil source OpenWrt ${{ env.OPENWRT_TAG }}
+        run: |
+          git clone --depth 1 -b "$OPENWRT_TAG" https://github.com/openwrt/openwrt.git
+          cd openwrt && git log -1 --oneline
+
+      - name: Terapkan overlay
+        working-directory: openwrt
+        run: |
+          cp -r ../overlay/package/kernel/uwe5622 package/kernel/
+          cp -r ../overlay/package/firmware/uwe5622-firmware package/firmware/
+          chmod +x package/kernel/uwe5622/files/sprdwl-delay
+
+          # Tema LuCI buatan sendiri. Sejak punya repo sendiri, ia diambil
+          # dari sana alih-alih disalin ke sini -- dua salinan CSS pasti akan
+          # saling menyimpang. Dipatok ke tag, bukan ke main, supaya image
+          # yang sama selalu bisa dibangun ulang.
+          git clone --depth 1 --branch "$THEME_TAG" \
+            https://github.com/rizkirmdhnnn/luci-theme-opizwrt.git \
+            package/luci-theme-opizwrt
+          rm -rf package/luci-theme-opizwrt/.git package/luci-theme-opizwrt/docs
+          chmod +x package/luci-theme-opizwrt/root/etc/uci-defaults/30_luci-theme-opizwrt
+          echo "tema: $THEME_TAG"
+
+          # Patch device tree: aktifkan mmc1 + regulator + pwrseq untuk AW859A
+          cp ../overlay/target/linux/sunxi/patches-6.12/*.patch \
+             target/linux/sunxi/patches-6.12/
+
+          # Sertakan driver pada profil Orange Pi Zero 3
+          patch -p1 < ../overlay/target/linux/sunxi/image/cortexa53-device-packages.patch
+
+          # Konfigurasi bawaan: apa pun di files/ ikut ke rootfs image.
+          # eth0 sebagai WAN, Wi-Fi sebagai AP, LAN 192.168.8.1.
+          cp -r ../overlay/files .
+
+          # Placeholder di files/etc/banner tidak disentuh VERSION_SED_SCRIPT
+          # (itu hanya berlaku untuk banner bawaan base-files, sementara files/
+          # disalin belakangan saat perakitan image). Diisi di sini supaya
+          # versi di banner tidak pernah basi.
+          BANNER_VER="${OPENWRT_TAG#v}"
+          BANNER_REV="$(./scripts/getver.sh 2>/dev/null || echo unknown)"
+          sed -i "s|%V|$BANNER_VER|g; s|%C|$BANNER_REV|g" files/etc/banner
+          echo "== banner =="; cat files/etc/banner
+
+          echo "== verifikasi overlay =="
+          grep -n "kmod-uwe5622" target/linux/sunxi/image/cortexa53.mk
+          ls target/linux/sunxi/patches-6.12/ | grep h616
+          echo "== config bawaan yang ditanam =="
+          find files -type f | sort
+
+          echo "== penjaga: tidak boleh ada rahasia ikut ke image publik =="
+          # Penjaga di sini BERBEDA dari yang di build privat, dan sengaja.
+          #
+          # Image publik memang membawa kredensial bawaan -- kunci Wi-Fi dan
+          # kredensial ttyd. Melarang seluruh opsi bertipe rahasia akan
+          # menolak build yang benar; membiarkannya tanpa periksa akan
+          # meloloskan kunci sungguhan yang tidak sengaja tersalin.
+          #
+          # Jadi yang diperiksa nilainya: setiap opsi rahasia harus persis
+          # sama dengan daftar bawaan yang terdokumentasi. Apa pun di luar itu
+          # dianggap kebocoran.
+          BAWAAN='opizwrt123|root:opizwrt'
+          BOCOR=0
+          while IFS= read -r baris; do
+            # Diambil dari antara kutip pertama dan terakhir. Percobaan
+            # sebelumnya mencocokkan 'option <nama> <nilai>' tetapi keluaran
+            # grep -r diawali 'berkas:baris:', sehingga '.*' di depan pola
+            # ikut menelan seluruh awalan itu dan yang tersisa justru barisnya
+            # utuh -- penjaga lalu menolak nilai bawaan yang benar.
+            NILAI=$(printf '%s' "$baris" | sed -E "s/^.*'(.*)'.*$/\1/")
+            if ! printf '%s' "$NILAI" | grep -qE "^($BAWAAN)$"; then
+              echo "  BOCOR: $baris"; BOCOR=1
+            else
+              echo "  OK (bawaan terdokumentasi): $NILAI"
+            fi
+          done < <(grep -rniE "^[^#]*\b(option|list)\s+(key|psk|password|authkey|secret|token)\b" files/ || true)
+          [ "$BOCOR" -eq 0 ] || { echo "GAGAL: ada nilai rahasia di luar daftar bawaan"; exit 1; }
+          echo "  bersih"
+
+
+      - name: Feeds
+        working-directory: openwrt
+        run: |
+          # Tag rilis memin setiap feed ke satu commit (mis. luci ^128a781),
+          # jadi build menghasilkan paket sebagaimana adanya pada hari rilis --
+          # sudah tertinggal dibanding repo online, yang terus dibangun ulang
+          # dari branch rilis. Diarahkan ke branch openwrt-25.12: itu jalur
+          # yang dipelihara agar tetap kompatibel dengan basis 25.12, bukan
+          # HEAD pengembangan.
+          echo "== feeds sebelum =="; cat feeds.conf.default
+          sed -i 's|\^[0-9a-f]\{40\}|;openwrt-25.12|' feeds.conf.default
+          echo "== feeds sesudah =="; cat feeds.conf.default
+
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+          echo "== versi paket kunci yang akan dibangun =="
+          for pkg in luci-base adguardhome tailscale; do
+            v=$(./scripts/feeds list -s 2>/dev/null | awk -v p="$pkg" '$1==p {print $2}')
+            printf "  %-14s %s\n" "$pkg" "${v:-?}"
+          done
+
+      - name: Konfigurasi
+        working-directory: openwrt
+        run: |
+          cat > .config <<'EOF'
+          CONFIG_TARGET_sunxi=y
+          CONFIG_TARGET_sunxi_cortexa53=y
+          CONFIG_TARGET_sunxi_cortexa53_DEVICE_xunlong_orangepi-zero3=y
+
+          # Rootfs dinaikkan dari 104 MB bawaan: perangkat ini dipakai sebagai
+          # gateway, dan AdGuard Home menyimpan log query yang terus tumbuh.
+          CONFIG_TARGET_ROOTFS_PARTSIZE=2048
+
+          # Identitas build sendiri. Aman untuk instalasi paket: URL repo
+          # dibentuk sepenuhnya dari VERSION_REPO, tidak menyentuh VERSION_DIST.
+          #
+          # Kedua sakelar di bawah WAJIB ada. Di package/base-files/image-config.in
+          # seluruh CONFIG_VERSION_* terkurung dalam blok 'if VERSIONOPT', dan
+          # VERSIONOPT sendiri berbawaan 'n' serta hanya bertanya bila IMAGEOPT
+          # menyala. Tanpa keduanya, make defconfig membuang semua baris VERSION_*
+          # tanpa sepatah peringatan pun -- build tetap sukses, hanya DISTRIB_ID
+          # tetap 'OpenWrt'. Persis itu yang terjadi pada build 29 Agustus 2026.
+          CONFIG_IMAGEOPT=y
+          CONFIG_VERSIONOPT=y
+          CONFIG_VERSION_DIST="Opizwrt By Rizpedia"
+          CONFIG_VERSION_MANUFACTURER="Rizpedia"
+          CONFIG_VERSION_MANUFACTURER_URL="https://github.com/rizkirmdhnnn/openwrt-opizero3-uwe5622"
+          CONFIG_VERSION_PRODUCT="Orange Pi Zero 3 (AP)"
+
+          # Wi-Fi
+          CONFIG_PACKAGE_kmod-uwe5622=y
+          CONFIG_PACKAGE_uwe5622-firmware=y
+          CONFIG_PACKAGE_wpad-basic-mbedtls=y
+          CONFIG_PACKAGE_wireless-regdb=y
+          CONFIG_PACKAGE_iw=y
+          CONFIG_PACKAGE_iwinfo=y
+
+          # LuCI
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-ssl=y
+          # Tema sendiri; uci-defaults-nya menjadikannya default saat boot pertama.
+          CONFIG_PACKAGE_luci-theme-opizwrt=y
+          # Bootstrap disimpan sebagai jaring pengaman: kalau tema kita pernah
+          # rusak oleh perubahan LuCI di kemudian hari, antarmuka tetap terbuka
+          # lewat 'uci set luci.main.mediaurlbase=/luci-static/bootstrap'.
+          CONFIG_PACKAGE_luci-theme-bootstrap=y
+
+          # Layanan gateway. Dipasang sejak dalam image, bukan setelah boot:
+          # perangkat inilah yang menyediakan internet, jadi ia tidak bisa
+          # mengandalkan internet untuk memasang paketnya sendiri.
+          CONFIG_PACKAGE_adguardhome=y
+          CONFIG_PACKAGE_luci-app-adguardhome=y
+          CONFIG_PACKAGE_tailscale=y
+          CONFIG_PACKAGE_luci-app-tailscale-community=y
+          CONFIG_PACKAGE_ttyd=y
+          CONFIG_PACKAGE_luci-app-ttyd=y
+
+          # bash dipakai ttyd sebagai shell; vnstat2 untuk statistik trafik.
+          CONFIG_PACKAGE_bash=y
+          CONFIG_PACKAGE_vnstat2=y
+          CONFIG_PACKAGE_luci-app-vnstat2=y
+
+          # Pemulihan otomatis: ping periodik, restart interface / reboot
+          # saat internet mati. Pengganti resmi internet-detector (pihak
+          # ketiga) yang dipakai setup lama.
+          CONFIG_PACKAGE_watchcat=y
+          CONFIG_PACKAGE_luci-app-watchcat=y
+
+          # Diagnostik darurat. Ditanam karena gateway tidak bisa memasang
+          # alat diagnosa justru saat internet sedang mati.
+          CONFIG_PACKAGE_tcpdump-mini=y
+          CONFIG_PACKAGE_bind-dig=y
+          CONFIG_PACKAGE_htop=y
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_iperf3=y
+          CONFIG_PACKAGE_ethtool=y
+          CONFIG_PACKAGE_ip-full=y
+
+          # Performa jalur: BBR untuk upload lewat WAN Wi-Fi yang lossy,
+          # irqbalance menyebar interrupt NIC+Wi-Fi ke 4 core.
+          CONFIG_PACKAGE_kmod-tcp-bbr=y
+          CONFIG_PACKAGE_irqbalance=y
+
+          # WAN darurat lewat tethering HP. Kmod tidak bisa dipasang
+          # belakangan tanpa internet, jadi harus ikut dari awal.
+          CONFIG_PACKAGE_kmod-usb-net-rndis=y
+          CONFIG_PACKAGE_kmod-usb-net-cdc-ncm=y
+          CONFIG_PACKAGE_usbutils=y
+
+          # Wake-on-LAN untuk server homelab.
+          CONFIG_PACKAGE_etherwake=y
+          CONFIG_PACKAGE_luci-app-wol=y
+
+          # Policy routing, padanan mangle/route rules RouterOS: memilih
+          # VLAN/host mana yang keluar lewat exit node Tailscale dan mana
+          # yang langsung.
+          CONFIG_PACKAGE_pbr=y
+          CONFIG_PACKAGE_luci-app-pbr=y
+
+          # Akuntansi bandwidth per client (padanan Accounting/Torch).
+          # vnstat hanya per interface; nlbwmon mencatat per host.
+          CONFIG_PACKAGE_nlbwmon=y
+          CONFIG_PACKAGE_luci-app-nlbwmon=y
+          CONFIG_PACKAGE_iftop=y
+
+          # Offload alur untuk NAT; SQM mematikannya saat aktif, tapi tetap
+          # berguna kalau WAN nanti pindah ke VLAN gigabit.
+          CONFIG_PACKAGE_kmod-nft-offload=y
+          EOF
+          make defconfig
+          echo "== ukuran rootfs =="
+          grep -E '^CONFIG_TARGET_ROOTFS_PARTSIZE=' .config
+          echo "== paket yang terpilih =="
+          grep -E '^CONFIG_PACKAGE_(kmod-uwe5622|uwe5622-firmware|wpad|iw|luci-ssl|adguardhome|tailscale|ttyd|luci-app-)[a-z-]*=y' .config
+
+      - name: Unduh source paket
+        working-directory: openwrt
+        run: make download -j8 V=s 2>&1 | tail -20
+
+      - name: Build
+        working-directory: openwrt
+        run: |
+          # Log ke berkas, bukan pipe ke tail: kalau proses dibunuh di tengah
+          # (seperti run 33227026315, SIGTERM tanpa jejak), pipe menelan semua
+          # output dan kita buta. Berkas menyisakan jejak sampai detik terakhir.
+          make -j$(nproc) V=s > build.log 2>&1 || {
+            echo "=== build paralel gagal ==="
+            df -h / | tail -1
+            tail -80 build.log
+            echo "=== ulangi -j1 untuk error yang terbaca ==="
+            make -j1 V=s 2>&1 | tail -200
+            exit 1
+          }
+          tail -30 build.log
+          df -h / | tail -1
+
+      - name: Periksa hasil
+        working-directory: openwrt
+        run: |
+          OUT=bin/targets/sunxi/cortexa53
+          ls -la $OUT/*.img.gz || { echo "GAGAL: image tidak terbentuk"; exit 1; }
+          echo
+          echo "== identitas build =="
+          REL=$(find build_dir -path "*base-files*/etc/openwrt_release" | head -1)
+          grep -E "DISTRIB_(ID|RELEASE|DESCRIPTION)" "$REL" 2>/dev/null | sed 's/^/  /' || true
+          # Gagalkan build kalau penandanya tidak ikut. Sebelumnya langkah ini
+          # berakhir '|| true' sehingga identitas yang hilang lolos tanpa suara.
+          if ! grep -q "DISTRIB_ID='Opizwrt By Rizpedia'" "$REL" 2>/dev/null; then
+            echo "GAGAL: CONFIG_VERSION_DIST tidak diterapkan -- periksa CONFIG_IMAGEOPT dan CONFIG_VERSIONOPT"
+            exit 1
+          fi
+
+          echo "== layanan gateway harus benar-benar ikut ke image =="
+          for p in kmod-uwe5622 uwe5622-firmware adguardhome tailscale ttyd \
+                   bash vnstat2 luci-app-adguardhome \
+                   luci-app-tailscale-community luci-app-ttyd \
+                   luci-app-vnstat2 luci-theme-opizwrt watchcat \
+                   luci-app-watchcat tcpdump-mini \
+                   bind-dig htop curl iperf3 ethtool ip-full kmod-tcp-bbr \
+                   irqbalance kmod-usb-net-rndis kmod-usb-net-cdc-ncm \
+                   usbutils etherwake luci-app-wol pbr luci-app-pbr \
+                   nlbwmon luci-app-nlbwmon iftop; do
+            if grep -q "^$p " $OUT/*.manifest; then
+              printf "  OK      %s\n" "$p"
+            else
+              printf "  HILANG  %s\n" "$p"; exit 1
+            fi
+          done
+          echo
+          echo "== device tree: apakah mmc1 aktif? =="
+          DTB=$(find build_dir -name 'sun50i-h618-orangepi-zero3.dtb' | head -1)
+          if [ -n "$DTB" ]; then
+            dtc -I dtb -O dts "$DTB" 2>/dev/null | grep -A12 'mmc@4021000' \
+              | grep -E 'status|pwrseq|vmmc-supply' || echo "  (node mmc1 tidak seperti yang diharapkan)"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openwrt-${{ env.OPENWRT_TAG }}-opizero3-wifi
+          path: |
+            openwrt/bin/targets/sunxi/cortexa53/*.img.gz
+            openwrt/bin/targets/sunxi/cortexa53/*.manifest
+            openwrt/bin/targets/sunxi/cortexa53/sha256sums

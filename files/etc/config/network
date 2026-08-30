@@ -1,0 +1,37 @@
+
+config interface 'loopback'
+	option device 'lo'
+	option proto 'static'
+	option ipaddr '127.0.0.1'
+	option netmask '255.0.0.0'
+
+config globals 'globals'
+
+# Orange Pi Zero 3 hanya punya SATU port ethernet, jadi port itu harus
+# memilih peran. Di sini ia menjadi WAN: colok ke router atau modem yang
+# sudah ada, dan Wi-Fi menyalurkan jaringannya. Itu susunan yang langsung
+# berguna begitu di-flash.
+#
+# Bila Anda justru ingin perangkat ini menjadi AP murni di jaringan yang
+# sudah ada -- tanpa NAT, tanpa DHCP sendiri -- pindahkan eth0 ke bridge
+# 'lan' di bawah lalu setel proto lan menjadi dhcp.
+config interface 'wan'
+	option device 'eth0'
+	option proto 'dhcp'
+
+config device
+	option name 'br-lan'
+	option type 'bridge'
+
+# 192.168.8.1, bukan 192.168.1.1 bawaan OpenWrt.
+#
+# Perangkat ini hampir selalu dicolok di belakang router lain, dan router
+# rumahan kebanyakan memakai 192.168.1.1 atau 192.168.0.1. Memakai subnet
+# yang sama di kedua sisi membuat perutean bertabrakan sejak boot pertama --
+# kegagalan yang membingungkan justru karena semuanya tampak benar.
+config interface 'lan'
+	option device 'br-lan'
+	option proto 'static'
+	option ipaddr '192.168.8.1'
+	option netmask '255.255.255.0'
+	option ip6assign '60'
