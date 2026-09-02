@@ -21,6 +21,10 @@ env:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    # GITHUB_TOKEN bersifat baca-saja secara bawaan, sehingga langkah rilis
+    # ditolak dengan "Resource not accessible by integration".
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -337,3 +341,16 @@ jobs:
             openwrt/bin/targets/sunxi/cortexa53/*.img.gz
             openwrt/bin/targets/sunxi/cortexa53/*.manifest
             openwrt/bin/targets/sunxi/cortexa53/sha256sums
+
+      # Artefak Actions butuh login GitHub dan hangus setelah 90 hari. Rilis
+      # tidak: tautannya terbuka dan permanen, jadi image ini bisa langsung
+      # diunduh siapa pun tanpa akun.
+      - name: Lampirkan image ke rilis
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            openwrt/bin/targets/sunxi/cortexa53/*.img.gz
+            openwrt/bin/targets/sunxi/cortexa53/*.manifest
+            openwrt/bin/targets/sunxi/cortexa53/sha256sums
+          generate_release_notes: true

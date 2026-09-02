@@ -52,7 +52,29 @@ commit dipin di `package/kernel/uwe5622/Makefile`.
 (reset PG18, clock 32k dari RTC), `&mmc1` sebagai SDIO 4-bit non-removable.
 Berasal dari Armbian (Gunjan Gupta).
 
-## Membangun
+## Unduh
+
+Image siap pakai ada di [**Releases**](../../releases/latest) — tidak perlu
+membangun sendiri.
+
+| Berkas | Untuk |
+|---|---|
+| `*-squashfs-sdcard.img.gz` | Pilihan biasa. Bisa factory reset. |
+| `*-ext4-sdcard.img.gz` | Bila butuh root filesystem yang bisa ditulis penuh. |
+
+```sh
+# Cek keutuhan berkas lebih dulu
+sha256sum -c sha256sums --ignore-missing
+
+# Tulis ke microSD (ganti /dev/sdX dengan kartu Anda -- SALAH DISK = DATA HILANG)
+gunzip -c openwrt-*-squashfs-sdcard.img.gz | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync
+```
+
+Di macOS pakai `/dev/rdiskN` dan `diskutil unmountDisk` lebih dulu. Kalau lebih
+suka antarmuka grafis, [balenaEtcher](https://etcher.balena.io/) menerima
+`.img.gz` apa adanya.
+
+## Membangun sendiri
 
 Lewat tab **Actions**.
 
@@ -61,7 +83,8 @@ Lewat tab **Actions**.
 | `build-packages.yml` | `.apk` driver saja | ±10 menit |
 | `build-image.yml` | image siap tulis ke microSD | ±1–1,5 jam |
 
-Untuk sekadar mengubah patch driver, pakai yang pertama.
+Untuk sekadar mengubah patch driver, pakai yang pertama. Mendorong tag `v*`
+menjalankan `build-image.yml` dan melampirkan hasilnya ke rilis.
 
 ## Konfigurasi bawaan image
 
@@ -104,21 +127,6 @@ terbuka sampai disunting lewat SSH. Ganti di **Settings → General**.
 CI memverifikasi ini: setiap nilai rahasia di `files/` harus persis sama
 dengan tabel di atas, sehingga kunci sungguhan yang tidak sengaja tersalin
 menggagalkan build.
-
-## Batas yang tidak bisa diperbaiki
-
-**Client dan AP bersamaan tidak mungkin.** Firmware melaporkan
-`fw_capa:0x120f7f` — bit 25 (`SPRDWL_CAPA_AP_STA`) mati. Kernel setuju:
-`#{ managed, AP } <= 1`. Board ini punya satu radio dua band, bukan dua radio,
-jadi memisah 2,4 dan 5 GHz tidak membantu. Perlu dongle USB.
-
-**`Tx-Power` selalu 0 dBm.** Bit 28 (`SPRDWL_CAPA_TX_POWER`) juga mati.
-
-**Mode AP: maksimum 10 klien**, antena 1×1 (2,4 GHz HT20 mentok ~72 Mbps).
-
-**Mode AP belum diuji di perangkat nyata.** Chip melaporkan dukungannya dan
-`hostapd` terpasang, tetapi papan rujukan proyek ini dipakai sebagai client.
-Laporkan lewat issue bila bermasalah.
 
 ## Setelah flash
 
